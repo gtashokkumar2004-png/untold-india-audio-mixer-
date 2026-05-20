@@ -19,6 +19,7 @@ app.post('/mix', async (req, res) => {
   try {
     const tempDir = '/tmp';
     const voiceFile = path.join(tempDir, `voice_${Date.now()}.mp3`);
+    const bgmRaw = path.join(tempDir, `bgm_raw_${Date.now()}.mp4`);
     const bgmFile = path.join(tempDir, `bgm_${Date.now()}.mp3`);
     const outputFile = path.join(tempDir, `output_${Date.now()}.mp3`);
 
@@ -26,13 +27,25 @@ app.post('/mix', async (req, res) => {
     const voiceBuffer = Buffer.from(voiceBase64, 'base64');
     fs.writeFileSync(voiceFile, voiceBuffer);
 
-    // Download BGM
     if (bgmUrl) {
+      // Download BGM (video file from Pixabay)
       const bgmResponse = await fetch(bgmUrl);
       const bgmBuffer = await bgmResponse.buffer();
-      fs.writeFileSync(bgmFile, bgmBuffer);
+      fs.writeFileSync(bgmRaw, bgmBuffer);
 
-      // Mix voice + BGM with ffmpeg
+      // Extract audio from video file
+      await new Promise((resolve, reject) => {
+        ffmpeg(bgmRaw)
+          .noVideo()
+          .audioCodec('libmp3lame')
+          .audioBitrate('128k')
+          .output(bgmFile)
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
+
+      // Mix voice + extracted BGM audio
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(voiceFile)
@@ -49,19 +62,20 @@ app.post('/mix', async (req, res) => {
           .on('error', reject)
           .run();
       });
+
+      // Cleanup BGM temp files
+      if (fs.existsSync(bgmRaw)) fs.unlinkSync(bgmRaw);
+      if (fs.existsSync(bgmFile)) fs.unlinkSync(bgmFile);
+
     } else {
-      // No BGM — just use voice
       fs.copyFileSync(voiceFile, outputFile);
     }
 
-    // Read output and return as base64
     const outputBuffer = fs.readFileSync(outputFile);
     const outputBase64 = outputBuffer.toString('base64');
 
-    // Cleanup temp files
-    fs.unlinkSync(voiceFile);
-    if (bgmUrl && fs.existsSync(bgmFile)) fs.unlinkSync(bgmFile);
-    fs.unlinkSync(outputFile);
+    if (fs.existsSync(voiceFile)) fs.unlinkSync(voiceFile);
+    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
 
     res.json({ 
       success: true, 
