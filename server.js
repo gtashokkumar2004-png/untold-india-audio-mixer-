@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', tts: 'google-wavenet' });
+  res.json({ status: 'ok', tts: 'google-wavenet-v2' });
 });
 
 async function getGoogleToken(serviceAccount) {
@@ -33,15 +33,28 @@ async function getGoogleToken(serviceAccount) {
   return data.access_token;
 }
 
+function addSSMLPauses(text) {
+  return text
+    .replace(/\.\.\./g, '<break time="900ms"/>')
+    .replace(/\. /g, '.<break time="600ms"/> ')
+    .replace(/\.\n/g, '.<break time="700ms"/>\n')
+    .replace(/\? /g, '?<break time="600ms"/> ')
+    .replace(/! /g, '!<break time="500ms"/> ')
+    .replace(/,/g, ',<break time="250ms"/>');
+}
+
 async function generateTTS(text, language, accessToken) {
   const voiceMap = {
-    tamil: { languageCode: 'ta-IN', name: 'ta-IN-Wavenet-A', ssmlGender: 'FEMALE' },
-    english: { languageCode: 'en-IN', name: 'en-IN-Wavenet-A', ssmlGender: 'FEMALE' },
-    hindi: { languageCode: 'hi-IN', name: 'hi-IN-Wavenet-A', ssmlGender: 'FEMALE' },
-    telugu: { languageCode: 'te-IN', name: 'te-IN-Standard-A', ssmlGender: 'FEMALE' }
+    tamil:   { languageCode: 'ta-IN', name: 'ta-IN-Wavenet-A',   ssmlGender: 'FEMALE' },
+    english: { languageCode: 'en-IN', name: 'en-IN-Wavenet-D',   ssmlGender: 'FEMALE' },
+    hindi:   { languageCode: 'hi-IN', name: 'hi-IN-Wavenet-A',   ssmlGender: 'FEMALE' },
+    telugu:  { languageCode: 'te-IN', name: 'te-IN-Standard-D',  ssmlGender: 'FEMALE' }
   };
 
   const voice = voiceMap[language] || voiceMap.tamil;
+  const processedText = addSSMLPauses(text);
+
+  const ssml = `<speak>${processedText}</speak>`;
 
   const response = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
     method: 'POST',
@@ -50,12 +63,13 @@ async function generateTTS(text, language, accessToken) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      input: { text: text },
+      input: { ssml: ssml },
       voice: voice,
       audioConfig: {
         audioEncoding: 'MP3',
-        speakingRate: 0.9,
-        pitch: -1.0
+        speakingRate: 0.85,
+        pitch: 0.0,
+        effectsProfileId: ['headphone-class-device']
       }
     })
   });
@@ -103,12 +117,12 @@ const SERVICE_ACCOUNT = {
 
 app.post('/tts', async (req, res) => {
   const { script, language } = req.body;
-  console.log('TTS request - language:', language, 'script length:', script && script.length);
+  console.log('TTS request - language:', language, 'length:', script && script.length);
   try {
     const accessToken = await getGoogleToken(SERVICE_ACCOUNT);
     const audioBuffer = await generateTTS(script, language || 'tamil', accessToken);
     const audioBase64 = audioBuffer.toString('base64');
-    console.log('Google TTS success - audio size:', audioBuffer.length);
+    console.log('Google TTS success - size:', audioBuffer.length);
     res.json({ success: true, audioBase64 });
   } catch (error) {
     console.error('TTS error:', error.message);
