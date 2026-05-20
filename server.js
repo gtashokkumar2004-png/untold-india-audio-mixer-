@@ -22,11 +22,19 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
     'te-IN-ShrutiNeural': 'te-IN'
   };
   const langCode = langMap[voice] || 'ta-IN';
-  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${langCode}"><voice name="${voice}"><prosody rate="0.90" pitch="-2st">${text}</prosody></voice></speak>`;
+
+  const processedText = text
+    .replace(/\.\.\./g, '<break time="800ms"/>')
+    .replace(/\. /g, '.<break time="600ms"/> ')
+    .replace(/\? /g, '?<break time="600ms"/> ')
+    .replace(/! /g, '!<break time="500ms"/> ')
+    .replace(/,/g, ',<break time="250ms"/>');
+
+  const ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + langCode + '"><voice name="' + voice + '"><prosody rate="0.80" pitch="-3st" volume="loud">' + processedText + '</prosody></voice></speak>';
 
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: `${azureRegion}.tts.speech.microsoft.com`,
+      hostname: azureRegion + '.tts.speech.microsoft.com',
       path: '/cognitiveservices/v1',
       method: 'POST',
       headers: {
@@ -45,7 +53,7 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
         const buffer = Buffer.concat(chunks);
         console.log('Azure response size:', buffer.length, 'bytes');
         if (res.statusCode !== 200) {
-          reject(new Error(`Azure TTS error: ${res.statusCode} - ${buffer.toString()}`));
+          reject(new Error('Azure TTS error: ' + res.statusCode + ' - ' + buffer.toString()));
         } else {
           resolve(buffer);
         }
@@ -59,14 +67,14 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
 
 async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
   return new Promise((resolve, reject) => {
-    const url = new URL(`${supabaseUrl}/storage/v1/object/audio-files/${fileName}`);
+    const url = new URL(supabaseUrl + '/storage/v1/object/audio-files/' + fileName);
     const options = {
       hostname: url.hostname,
       path: url.pathname,
       method: 'POST',
       headers: {
         'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
+        'Authorization': 'Bearer ' + supabaseKey,
         'Content-Type': 'audio/mpeg',
         'x-upsert': 'true',
         'Content-Length': audioBuffer.length
@@ -77,7 +85,6 @@ async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         console.log('Supabase upload status:', res.statusCode);
-        console.log('Supabase response:', Buffer.concat(chunks).toString());
         resolve(res.statusCode);
       });
     });
@@ -89,7 +96,7 @@ async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
 
 app.post('/tts', async (req, res) => {
   const { script, voice, azureKey, azureRegion } = req.body;
-  console.log('TTS request - voice:', voice, 'script length:', script?.length);
+  console.log('TTS request - voice:', voice, 'script length:', script && script.length);
   try {
     const audioBuffer = await generateTTS(script, voice, azureKey, azureRegion);
     const audioBase64 = audioBuffer.toString('base64');
@@ -102,40 +109,30 @@ app.post('/tts', async (req, res) => {
 });
 
 app.post('/mix-and-save', async (req, res) => {
-  const { voiceBase64, bgmUrl, language, episodeTitle, supabaseUrl, supabaseKey } = req.body;
-  console.log('Mix-and-save request - language:', language, 'voiceBase64 length:', voiceBase64?.length);
+  const { voiceBase64, language, episodeTitle, supabaseUrl, supabaseKey } = req.body;
+  console.log('Mix-and-save - language:', language, 'voiceBase64 length:', voiceBase64 && voiceBase64.length);
 
   try {
     const tempDir = '/tmp';
-    const voiceFile = path.join(tempDir, `voice_${Date.now()}.mp3`);
-    const outputFile = path.join(tempDir, `output_${Date.now()}.mp3`);
+    const voiceFile = path.join(tempDir, 'voice_' + Date.now() + '.mp3');
+    const outputFile = path.join(tempDir, 'output_' + Date.now() + '.mp3');
 
     const voiceBuffer = Buffer.from(voiceBase64, 'base64');
     console.log('Voice buffer size:', voiceBuffer.length);
     fs.writeFileSync(voiceFile, voiceBuffer);
-
-    // For now just use voice without BGM
     fs.copyFileSync(voiceFile, outputFile);
 
     const outputBuffer = fs.readFileSync(outputFile);
-    console.log('Output buffer size:', outputBuffer.length);
-
-    // Save directly to Supabase using https
-    const fileName = `untold_india_${language}_${Date.now()}.mp3`;
-    const statusCode = await saveToSupabase(outputBuffer, fileName, supabaseUrl, supabaseKey);
+    const fileName = 'untold_india_' + language + '_' + Date.now() + '.mp3';
+    await saveToSupabase(outputBuffer, fileName, supabaseUrl, supabaseKey);
 
     if (fs.existsSync(voiceFile)) fs.unlinkSync(voiceFile);
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
 
-    const publicUrl = `${supabaseUrl}/storage/v1/object/public/audio-files/${fileName}`;
+    const publicUrl = supabaseUrl + '/storage/v1/object/public/audio-files/' + fileName;
     console.log('Saved to:', publicUrl);
 
-    res.json({
-      success: true,
-      publicUrl,
-      fileName,
-      language
-    });
+    res.json({ success: true, publicUrl, fileName, language });
   } catch (error) {
     console.error('Mix-and-save error:', error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -143,19 +140,11 @@ app.post('/mix-and-save', async (req, res) => {
 });
 
 app.post('/mix', async (req, res) => {
-  const { voiceBase64, bgmUrl, language } = req.body;
+  const { voiceBase64, language } = req.body;
   try {
-    const tempDir = '/tmp';
-    const voiceFile = path.join(tempDir, `voice_${Date.now()}.mp3`);
-    const outputFile = path.join(tempDir, `output_${Date.now()}.mp3`);
     const voiceBuffer = Buffer.from(voiceBase64, 'base64');
-    fs.writeFileSync(voiceFile, voiceBuffer);
-    fs.copyFileSync(voiceFile, outputFile);
-    const outputBuffer = fs.readFileSync(outputFile);
-    const outputBase64 = outputBuffer.toString('base64');
-    if (fs.existsSync(voiceFile)) fs.unlinkSync(voiceFile);
-    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-    res.json({ success: true, audioBase64: outputBase64, language });
+    const audioBase64 = voiceBuffer.toString('base64');
+    res.json({ success: true, audioBase64, language });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -163,5 +152,5 @@ app.post('/mix', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Audio mixer running on port ${PORT}`);
+  console.log('Audio mixer running on port ' + PORT);
 });
