@@ -10,50 +10,37 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', tts: 'available' });
+  res.json({ status: 'ok', tts: 'elevenlabs' });
 });
 
-async function generateTTS(text, voice, azureKey, azureRegion) {
-  const langMap = {
-    'ta-IN-PallaviNeural': 'ta-IN',
-    'en-IN-NeerjaNeural': 'en-IN',
-    'hi-IN-SwaraNeural': 'hi-IN',
-    'te-IN-ShrutiNeural': 'te-IN'
-  };
-  const langCode = langMap[voice] || 'ta-IN';
-  const ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + langCode + '"><voice name="' + voice + '">' + text + '</voice></speak>';
-
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: azureRegion + '.tts.speech.microsoft.com',
-      path: '/cognitiveservices/v1',
-      method: 'POST',
-      headers: {
-        'Ocp-Apim-Subscription-Key': azureKey,
-        'Content-Type': 'application/ssml+xml',
-        'X-Microsoft-OutputFormat': 'audio-16khz-128kbitrate-mono-mp3',
-        'User-Agent': 'UntoldIndia/1.0',
-        'Content-Length': Buffer.byteLength(ssml, 'utf8')
+async function generateTTS(text, voiceId, apiKey) {
+  const response = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + voiceId, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': apiKey,
+      'Content-Type': 'application/json',
+      'Accept': 'audio/mpeg'
+    },
+    body: JSON.stringify({
+      text: text,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75,
+        style: 0.4,
+        use_speaker_boost: true
       }
-    };
-    const req = https.request(options, (res) => {
-      console.log('Azure TTS status:', res.statusCode);
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        console.log('Azure response size:', buffer.length);
-        if (res.statusCode !== 200) {
-          reject(new Error('Azure TTS error: ' + res.statusCode));
-        } else {
-          resolve(buffer);
-        }
-      });
-    });
-    req.on('error', reject);
-    req.write(ssml, 'utf8');
-    req.end();
+    })
   });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error('ElevenLabs error: ' + response.status + ' - ' + err);
+  }
+
+  const buffer = await response.buffer();
+  console.log('ElevenLabs audio size:', buffer.length, 'bytes');
+  return buffer;
 }
 
 async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
@@ -86,18 +73,21 @@ async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
 }
 
 app.post('/tts', async (req, res) => {
-  const { script, voice, azureKey, azureRegion } = req.body;
+  const { script, elevenLabsKey, voiceId } = req.body;
+  console.log('TTS request - voiceId:', voiceId, 'script length:', script && script.length);
   try {
-    const audioBuffer = await generateTTS(script, voice, azureKey, azureRegion);
+    const audioBuffer = await generateTTS(script, voiceId, elevenLabsKey);
     const audioBase64 = audioBuffer.toString('base64');
     res.json({ success: true, audioBase64 });
   } catch (error) {
+    console.error('TTS error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.post('/mix-and-save', async (req, res) => {
   const { voiceBase64, language, episodeTitle, supabaseUrl, supabaseKey } = req.body;
+  console.log('Mix-and-save - language:', language);
   try {
     const tempDir = '/tmp';
     const voiceFile = path.join(tempDir, 'voice_' + Date.now() + '.mp3');
@@ -111,18 +101,10 @@ app.post('/mix-and-save', async (req, res) => {
     if (fs.existsSync(voiceFile)) fs.unlinkSync(voiceFile);
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
     const publicUrl = supabaseUrl + '/storage/v1/object/public/audio-files/' + fileName;
+    console.log('Saved to:', publicUrl);
     res.json({ success: true, publicUrl, fileName, language });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/mix', async (req, res) => {
-  const { voiceBase64, language } = req.body;
-  try {
-    const voiceBuffer = Buffer.from(voiceBase64, 'base64');
-    res.json({ success: true, audioBase64: voiceBuffer.toString('base64'), language });
-  } catch (error) {
+    console.error('Mix-and-save error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
