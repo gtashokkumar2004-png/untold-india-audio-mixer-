@@ -1,5 +1,4 @@
 const express = require('express');
-const ffmpeg = require('fluent-ffmpeg');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const fs = require('fs');
@@ -11,7 +10,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', ffmpeg: 'available', tts: 'available' });
+  res.json({ status: 'ok', tts: 'available' });
 });
 
 async function generateTTS(text, voice, azureKey, azureRegion) {
@@ -22,15 +21,7 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
     'te-IN-ShrutiNeural': 'te-IN'
   };
   const langCode = langMap[voice] || 'ta-IN';
-
-  const processedText = text
-    .replace(/\.\.\./g, '<break time="800ms"/>')
-    .replace(/\. /g, '.<break time="600ms"/> ')
-    .replace(/\? /g, '?<break time="600ms"/> ')
-    .replace(/! /g, '!<break time="500ms"/> ')
-    .replace(/,/g, ',<break time="250ms"/>');
-
-  const ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + langCode + '"><voice name="' + voice + '"><prosody rate="0.80" pitch="-3st" volume="loud">' + processedText + '</prosody></voice></speak>';
+  const ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + langCode + '"><voice name="' + voice + '">' + text + '</voice></speak>';
 
   return new Promise((resolve, reject) => {
     const options = {
@@ -51,9 +42,9 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         const buffer = Buffer.concat(chunks);
-        console.log('Azure response size:', buffer.length, 'bytes');
+        console.log('Azure response size:', buffer.length);
         if (res.statusCode !== 200) {
-          reject(new Error('Azure TTS error: ' + res.statusCode + ' - ' + buffer.toString()));
+          reject(new Error('Azure TTS error: ' + res.statusCode));
         } else {
           resolve(buffer);
         }
@@ -96,45 +87,32 @@ async function saveToSupabase(audioBuffer, fileName, supabaseUrl, supabaseKey) {
 
 app.post('/tts', async (req, res) => {
   const { script, voice, azureKey, azureRegion } = req.body;
-  console.log('TTS request - voice:', voice, 'script length:', script && script.length);
   try {
     const audioBuffer = await generateTTS(script, voice, azureKey, azureRegion);
     const audioBase64 = audioBuffer.toString('base64');
-    console.log('TTS success - audio size:', audioBuffer.length);
     res.json({ success: true, audioBase64 });
   } catch (error) {
-    console.error('TTS error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.post('/mix-and-save', async (req, res) => {
   const { voiceBase64, language, episodeTitle, supabaseUrl, supabaseKey } = req.body;
-  console.log('Mix-and-save - language:', language, 'voiceBase64 length:', voiceBase64 && voiceBase64.length);
-
   try {
     const tempDir = '/tmp';
     const voiceFile = path.join(tempDir, 'voice_' + Date.now() + '.mp3');
     const outputFile = path.join(tempDir, 'output_' + Date.now() + '.mp3');
-
     const voiceBuffer = Buffer.from(voiceBase64, 'base64');
-    console.log('Voice buffer size:', voiceBuffer.length);
     fs.writeFileSync(voiceFile, voiceBuffer);
     fs.copyFileSync(voiceFile, outputFile);
-
     const outputBuffer = fs.readFileSync(outputFile);
     const fileName = 'untold_india_' + language + '_' + Date.now() + '.mp3';
     await saveToSupabase(outputBuffer, fileName, supabaseUrl, supabaseKey);
-
     if (fs.existsSync(voiceFile)) fs.unlinkSync(voiceFile);
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-
     const publicUrl = supabaseUrl + '/storage/v1/object/public/audio-files/' + fileName;
-    console.log('Saved to:', publicUrl);
-
     res.json({ success: true, publicUrl, fileName, language });
   } catch (error) {
-    console.error('Mix-and-save error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -143,8 +121,7 @@ app.post('/mix', async (req, res) => {
   const { voiceBase64, language } = req.body;
   try {
     const voiceBuffer = Buffer.from(voiceBase64, 'base64');
-    const audioBase64 = voiceBuffer.toString('base64');
-    res.json({ success: true, audioBase64, language });
+    res.json({ success: true, audioBase64: voiceBuffer.toString('base64'), language });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
