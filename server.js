@@ -14,7 +14,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', ffmpeg: 'available', tts: 'available' });
 });
 
-// Generate TTS via Azure
 async function generateTTS(text, voice, azureKey, azureRegion) {
   const langMap = {
     'ta-IN-PallaviNeural': 'ta-IN',
@@ -24,11 +23,7 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
   };
   const langCode = langMap[voice] || 'ta-IN';
 
-  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${langCode}">
-    <voice name="${voice}">
-      <prosody rate="0.90" pitch="-2st">${text}</prosody>
-    </voice>
-  </speak>`;
+  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${langCode}"><voice name="${voice}"><prosody rate="0.90" pitch="-2st">${text}</prosody></voice></speak>`;
 
   return new Promise((resolve, reject) => {
     const options = {
@@ -39,37 +34,52 @@ async function generateTTS(text, voice, azureKey, azureRegion) {
         'Ocp-Apim-Subscription-Key': azureKey,
         'Content-Type': 'application/ssml+xml',
         'X-Microsoft-OutputFormat': 'audio-16khz-128kbitrate-mono-mp3',
-        'Content-Length': Buffer.byteLength(ssml)
+        'User-Agent': 'UntoldIndia/1.0',
+        'Content-Length': Buffer.byteLength(ssml, 'utf8')
       }
     };
 
     const req = https.request(options, (res) => {
+      console.log('Azure TTS status:', res.statusCode);
+      console.log('Azure TTS headers:', res.headers);
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        console.log('Azure response size:', buffer.length, 'bytes');
+        if (res.statusCode !== 200) {
+          console.log('Azure error response:', buffer.toString());
+          reject(new Error(`Azure TTS error: ${res.statusCode} - ${buffer.toString()}`));
+        } else {
+          resolve(buffer);
+        }
+      });
     });
 
-    req.on('error', reject);
-    req.write(ssml);
+    req.on('error', (e) => {
+      console.error('Request error:', e);
+      reject(e);
+    });
+    req.write(ssml, 'utf8');
     req.end();
   });
 }
 
-// Generate TTS endpoint
 app.post('/tts', async (req, res) => {
   const { script, voice, azureKey, azureRegion } = req.body;
+  console.log('TTS request - voice:', voice, 'region:', azureRegion, 'script length:', script?.length);
 
   try {
     const audioBuffer = await generateTTS(script, voice, azureKey, azureRegion);
     const audioBase64 = audioBuffer.toString('base64');
+    console.log('TTS success - audio size:', audioBuffer.length);
     res.json({ success: true, audioBase64 });
   } catch (error) {
-    console.error('TTS error:', error);
+    console.error('TTS error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Mix audio endpoint
 app.post('/mix', async (req, res) => {
   const { voiceBase64, bgmUrl, language } = req.body;
 
